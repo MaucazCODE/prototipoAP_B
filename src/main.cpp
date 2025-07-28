@@ -4,6 +4,9 @@
 #include "apwifieeprommode.h"
 #include <EEPROM.h>
 
+// Definir el servidor web
+WebServer server(80);
+
 // Pines motor 1 (izquierdo)
 #define IN1_M1 14
 #define IN2_M1 27
@@ -25,9 +28,9 @@
 
 //definir puntos
 #define MAX_PUNTOS 100
-volatile int historialAngulos[MAX_PUNTOS];
-volatile int historialDistancias[MAX_PUNTOS];
-volatile int numPuntos = 0;
+int historialAngulos[MAX_PUNTOS];
+int historialDistancias[MAX_PUNTOS];
+int numPuntos = 0;
 
 
 // Crear objetos de motores
@@ -47,6 +50,13 @@ const int margenSeguridad = 100; // mm, radio del robot
 // Variables
 int mejorAngulo = 0;
 int mayorDistancia = 0;
+float ultimoAngulo = 0;
+float ultimaDistancia = 0;
+
+// Posición del robot (en mm)
+float robotX = 0;
+float robotY = 0;
+float robotAngulo = 0; // Ángulo actual del robot (0° = hacia adelante)
 
 // Prototipos
 void escanearYBuscar();
@@ -55,7 +65,21 @@ void avanzarRobot(int mm);
 
 void setup() {
   Serial.begin(115200);
-  intentoconexion("espgroup1", "12341243");
+  
+  // Inicializar EEPROM
+  EEPROM.begin(512);
+  
+  // Configurar directamente en modo AP (sin intentar conectar a Wi-Fi)
+  Serial.println("Iniciando en modo Access Point...");
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP("espgroup1", "12341243");
+  
+  // Configurar servidor web
+  server.on("/", handleRoot);
+  server.on("/wifi", handleWifi);
+  server.begin();
+  Serial.println("Servidor web iniciado en 192.168.4.1");
+  
   Wire.begin(21, 22); // SDA, SCL para VL53L0X
 
   sensor.init();
@@ -75,93 +99,111 @@ void setup() {
 }
 
 void loop() {
-loopAP();
-escanearYBuscar(); // 1. Escanea
-girarRobot(mejorAngulo); // 2. Gira al mejor ángulo
-avanzarRobot(mayorDistancia - margenSeguridad); // 3. Avanza con margen
-delay(1000); // Pausa antes de repetir ciclo
+  // Manejar el servidor web
+  server.handleClient();
+  
+  // Escanear continuamente para mostrar el mapa del entorno
+  escanearYBuscar(); // Escanear para mostrar en la web
+  delay(3000); // Pausa entre escaneos (3 segundos)
+  girarRobot(mejorAngulo);
+  avanzarRobot(mayorDistancia);
 }
 
 // ---------- FUNCIONES -------------
 
 void escanearYBuscar() {
-mejorAngulo = 0;
-mayorDistancia = 0;
-numPuntos = 0;
+  mejorAngulo = 0;
+  mayorDistancia = 0;
+  numPuntos = 0;
 
-// IDA: 0° a 360°
-for (int angulo = 0; angulo <= 360; angulo += 5) {
-  int pasos = angulo * pasosPorGrado;
-  radarMotor.moveTo(pasos);
+  // Calibración del motor - ir a posición 0° con mayor precisión
+  radarMotor.setCurrentPosition(0);
+  radarMotor.setSpeed(500); // Velocidad más lenta para mayor precisión
+  radarMotor.moveTo(0);
   while (radarMotor.distanceToGo() != 0) radarMotor.run();
-  delay(10); // escaneo más rápido
+  delay(200); // Pausa más larga para estabilizar
 
-  int dist = sensor.readRangeContinuousMillimeters();
-  Serial.print("→ Ángulo: "); Serial.print(angulo);
-  Serial.print(" mm: "); Serial.println(dist);
+  // IDA: 0° a 360° (sentido antihorario/izquierda)
+  for (int angulo = 0; angulo <= 360; angulo += 5) {
+    int pasos = angulo * pasosPorGrado;
+    radarMotor.moveTo(pasos);
+    while (radarMotor.distanceToGo() != 0) radarMotor.run();
+    delay(10); // escaneo más rápido
 
-if (!sensor.timeoutOccurred() && dist < 2000) {
-    if (numPuntos < MAX_PUNTOS) {
+    int dist = sensor.readRangeContinuousMillimeters();
+    Serial.print("→ Ángulo: "); Serial.print(angulo);
+    Serial.print(" mm: "); Serial.println(dist);
+
+    // Actualizar último escaneo
+    ultimoAngulo = (float)angulo;
+    ultimaDistancia = (float)dist;
+
+    if (!sensor.timeoutOccurred() && dist < 2000) {
+      if (numPuntos < MAX_PUNTOS) {
         historialAngulos[numPuntos] = angulo;
         historialDistancias[numPuntos] = dist;
         numPuntos++;
+      }
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("Mandado a la pagina ");
+      server.send(200, "text/plain", "Mostrando dato");
+    } else {
+      Serial.println("No esta conectado el wifi");
+    }
+
+    if (!sensor.timeoutOccurred() && dist > mayorDistancia && dist < 2000) {
+      mayorDistancia = dist;
+      mejorAngulo = angulo;
     }
   }
 
+  // REGRESO: 360° a 0° (sentido horario/derecha)
+  for (int angulo = 360; angulo >= 0; angulo -= 5) {
+    // Usamos el mismo cálculo de pasos que en la ida
+    int pasos = angulo * pasosPorGrado;
+    radarMotor.moveTo(pasos);
+    while (radarMotor.distanceToGo() != 0) radarMotor.run();
+    delay(10);
 
+    int dist = sensor.readRangeContinuousMillimeters();
+    Serial.print("← Ángulo: "); Serial.print(angulo);
+    Serial.print(" mm: "); Serial.println(dist);
 
-  if (WiFi.status() ==WL_CONNECTED){
-    Serial.println("Mandado a la pagina ");
-    server.send(200, "text/plain", "Mostrando dato");
-  } else{
-  Serial.println("No esta conectado el wifi"); } 
+    // Actualizar último escaneo
+    ultimoAngulo = (float)angulo;
+    ultimaDistancia = (float)dist;
 
-  if (!sensor.timeoutOccurred() && dist > mayorDistancia && dist < 2000) {
-  mayorDistancia = dist;
-  mejorAngulo = angulo;
-  }
-}
-
-// REGRESO: 360° a 0°
-for (int angulo = 360; angulo >= 0; angulo -= 5) {
-  int pasos = angulo * pasosPorGrado*3;
-  radarMotor.moveTo(pasos);
-  while (radarMotor.distanceToGo() != 0) radarMotor.run();
-  delay(10);
-
-  int dist = sensor.readRangeContinuousMillimeters();
-  Serial.print("← Ángulo: "); Serial.print(angulo);
-  Serial.print(" mm: "); Serial.println(dist);
-
-
-if (!sensor.timeoutOccurred() && dist < 2000) {
-    if (numPuntos < MAX_PUNTOS) {
+    if (!sensor.timeoutOccurred() && dist < 2000) {
+      if (numPuntos < MAX_PUNTOS) {
         historialAngulos[numPuntos] = angulo;
         historialDistancias[numPuntos] = dist;
         numPuntos++;
-     }
- }
-
-
-
-
-
-
-  if (WiFi.status() ==WL_CONNECTED){
-    Serial.println("Mandado a la pagina ");
-    server.send(200, "text/plain", "Mostrando dato");
-  } else{
-  Serial.println("No esta conectado el wifi"); } 
-
-  if (!sensor.timeoutOccurred() && dist > mayorDistancia && dist < 2000) {
-    mayorDistancia = dist;
-    mejorAngulo = angulo;
+      }
     }
-}
 
-// Regresa a posición 0°
-radarMotor.moveTo(0);
-while (radarMotor.distanceToGo() != 0) radarMotor.run();
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("Mandado a la pagina ");
+      server.send(200, "text/plain", "Mostrando dato");
+    } else {
+      Serial.println("No esta conectado el wifi");
+    }
+
+    if (!sensor.timeoutOccurred() && dist > mayorDistancia && dist < 2000) {
+      mayorDistancia = dist;
+      mejorAngulo = angulo;
+    }
+  }
+
+  // Verificación final en posición 0°
+  radarMotor.setSpeed(500); // Velocidad más lenta para mayor precisión
+  radarMotor.moveTo(0);
+  while (radarMotor.distanceToGo() != 0) radarMotor.run();
+  delay(200); // Pausa más larga para estabilizar
+
+  // Restaurar velocidad normal
+  radarMotor.setSpeed(2000);
 }
 
   void girarRobot(int angulo) {
@@ -174,6 +216,13 @@ while (radarMotor.distanceToGo() != 0) radarMotor.run();
     motor1.run();
     motor2.run();
     }
+    
+  // Actualizar ángulo del robot
+  robotAngulo += angulo;
+  if (robotAngulo >= 360) robotAngulo -= 360;
+  if (robotAngulo < 0) robotAngulo += 360;
+  
+  Serial.println("Robot giró " + String(angulo) + "°. Ángulo actual: " + String(robotAngulo) + "°");
 }
 
 void avanzarRobot(int mm) {
@@ -188,5 +237,12 @@ void avanzarRobot(int mm) {
     motor1.run();
     motor2.run();
     }
+    
+  // Actualizar posición del robot
+  float radianes = robotAngulo * 3.14159265 / 180.0;
+  robotX += mm * cos(radianes);
+  robotY += mm * sin(radianes);
+  
   Serial.println("Salio del loop de avnce ");
+  Serial.println("Posición robot: X=" + String(robotX) + " Y=" + String(robotY) + " Ángulo=" + String(robotAngulo));
 }

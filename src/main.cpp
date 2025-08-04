@@ -25,25 +25,20 @@ WebServer server(80);
 #define IN3_M3 4
 #define IN4_M3 2
 
-
-//definir puntos
-#define MAX_PUNTOS 100
+// Definir puntos - AUMENTADO para más capacidad
+#define MAX_PUNTOS 500
 int historialAngulos[MAX_PUNTOS];
 int historialDistancias[MAX_PUNTOS];
 int numPuntos = 0;
 
-
-//CPUs a utilizar
+// CPUs a utilizar
 #define PRO_CPU 0
 #define APP_CPU 1
 #define NOAFF_CPU tskNO_AFFINITY
 
-
-
 // Crear objetos de motores
 AccelStepper motor1(AccelStepper::FULL4WIRE, IN1_M1, IN3_M1, IN2_M1, IN4_M1);
 AccelStepper motor2(AccelStepper::FULL4WIRE, IN1_M2, IN3_M2, IN2_M2, IN4_M2);
-
 
 // Sensor LIDAR
 VL53L0X sensor;
@@ -51,8 +46,7 @@ VL53L0X sensor;
 // Constantes
 const int pasosPorGrado = 2048 / 360; // Motor 28BYJ-48 // Ajusta según pruebas
 const int pasosPorMM = 50; // pasos para avanzar un mm // Ajusta según pruebas
-const int margenSeguridad = 20; // mm, radio del robot
-
+const int margenSeguridad = 165; // mm, radio del robot
 
 // Variables
 int mejorAngulo = 0;
@@ -65,31 +59,33 @@ float robotX = 0;
 float robotY = 0;
 float robotAngulo = 0; // Ángulo actual del robot (0° = hacia adelante)
 
+// Variables para control de escaneo
+bool nuevoEscaneoCompleto = false;
+int puntosAntesDeCiclo = 0;
+
 // Prototipos
 void escanearYBuscar();
 void girarRobot(int angulo);
 void avanzarRobot(int mm);
 
-
 void TestHwm(char *taskName);
 void TaskESCANEO(void *pvParameters);
 void TaskROTARCOM(void *pvParameters);
 
-//para sincronizacion
+// Para sincronización
 SemaphoreHandle_t xSemaphore = NULL;
 volatile int tareasTerminadas = 0;  
-//hay 2 tareas paralelas por loop, que gire 360 y que escanee
+// Hay 2 tareas paralelas por loop, que gire 360 y que escanee
 const int TOTAL_TAREAS = 2;
-
 
 void setup() {
   Serial.begin(115200);
   // Inicializar EEPROM
   EEPROM.begin(512);
 
-  //task paralelos
-  xTaskCreatePinnedToCore(TaskESCANEO, "TaskESCANEO",4096,NULL,1,NULL,APP_CPU);
-  xTaskCreatePinnedToCore(TaskROTARCOM, "TaskROTARCOM",4096,NULL,1,NULL,APP_CPU);
+  // Task paralelos
+  xTaskCreatePinnedToCore(TaskESCANEO, "TaskESCANEO", 4096, NULL, 1, NULL, APP_CPU);
+  xTaskCreatePinnedToCore(TaskROTARCOM, "TaskROTARCOM", 4096, NULL, 1, NULL, APP_CPU);
 
   // Intentar conectarse a la red guardada (la de la laptop/hotspot)
   // Si no puede, crea el AP para registrar la red
@@ -97,6 +93,7 @@ void setup() {
 
   // Configurar servidor web
   server.on("/", handleRoot);
+  server.on("/check-updates", handleCheckUpdates);
   server.on("/wifi", handleWifi);
   server.begin();
   Serial.println("Servidor web iniciado");
@@ -113,29 +110,34 @@ void setup() {
   motor2.setMaxSpeed(800);
   motor2.setAcceleration(400);
 
-  //se inicia "semaforo"
+  // Se inicia "semáforo"
   xSemaphore = xSemaphoreCreateBinary();
-  //liberamos inicialmente
+  // Liberamos inicialmente
   xSemaphoreGive(xSemaphore); 
   delay(1000);
+  
+  Serial.println("Sistema iniciado. Comenzando escaneo continuo...");
 }
 
 void loop() {
   // Manejar el servidor web
   server.handleClient();
   loopServidorWeb();
+  
+  // Recordar cuántos puntos teníamos antes del ciclo
+  puntosAntesDeCiclo = numPuntos;
+  
   // Escanear continuamente para mostrar el mapa del entorno
-
-if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
+  if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
     tareasTerminadas = 0;
-    //se reinicia el contador por ciclo
+    // Se reinicia el contador por ciclo
     xSemaphoreGive(xSemaphore);
     
     xTaskCreatePinnedToCore(TaskESCANEO, "TaskESCANEO", 4096, NULL, 1, NULL, APP_CPU);
     xTaskCreatePinnedToCore(TaskROTARCOM, "TaskROTARCOM", 4096, NULL, 1, NULL, APP_CPU);
   }
 
-  //AMBAS deben terminar
+  // AMBAS deben terminar
   while (true) {
     xSemaphoreTake(xSemaphore, portMAX_DELAY);
     if (tareasTerminadas >= TOTAL_TAREAS) {
@@ -144,14 +146,19 @@ if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
     }
     xSemaphoreGive(xSemaphore);
     delay(10);
-    //seguridad
+    // Seguridad
   }
 
-
+  // Verificar si hay nuevos puntos
+  if (numPuntos > puntosAntesDeCiclo) {
+    nuevoEscaneoCompleto = true;
+    Serial.println("Nuevos puntos detectados: " + String(numPuntos - puntosAntesDeCiclo));
+    Serial.println("Total de puntos acumulados: " + String(numPuntos));
+  }
   
   delay(3000); // Pausa entre escaneos (3 segundos)
   girarRobot(mejorAngulo);
-  avanzarRobot((mayorDistancia)-margenSeguridad);
+  avanzarRobot((mayorDistancia) - margenSeguridad);
 }
 
 // ---------- FUNCIONES -------------
@@ -159,12 +166,11 @@ if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
 void escanearYBuscar() {
   mejorAngulo = 0;
   mayorDistancia = 0;
+  
+  Serial.println("Iniciando escaneo 360°...");
 
   // IDA: 0° a 360° (sentido antihorario/izquierda)
   for (int angulo = 0; angulo <= 360; angulo += 5) {
-    
-    
-
     int dist = sensor.readRangeContinuousMillimeters();
     Serial.print("→ Ángulo: "); Serial.print(angulo);
     Serial.print(" mm: "); Serial.println(dist);
@@ -173,33 +179,43 @@ void escanearYBuscar() {
     ultimoAngulo = (float)angulo;
     ultimaDistancia = (float)dist;
 
-    if (!sensor.timeoutOccurred() && dist < 2000) {
+    // Solo agregar puntos válidos que estén dentro del rango
+    if (!sensor.timeoutOccurred() && dist < 2000 && dist > 30) { // Filtrar lecturas muy cercanas también
       if (numPuntos < MAX_PUNTOS) {
         historialAngulos[numPuntos] = angulo;
         historialDistancias[numPuntos] = dist;
         numPuntos++;
+        Serial.println("Punto agregado #" + String(numPuntos) + " - Ángulo: " + String(angulo) + "° Distancia: " + String(dist) + "mm");
+      } else {
+        Serial.println("Límite de puntos alcanzado (" + String(MAX_PUNTOS) + ")");
       }
     }
 
+    // Verificar conexión WiFi
     if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("Mandado a la pagina ");
-      server.send(200, "text/plain", "Mostrando dato");
+      // No enviar datos individuales, solo verificar conexión
     } else {
-      Serial.println("No esta conectado el wifi");
+      Serial.println("WiFi desconectado");
     }
 
+    // Buscar la mejor dirección para moverse
     if (!sensor.timeoutOccurred() && dist > mayorDistancia && dist < 2000) {
       mayorDistancia = dist;
       mejorAngulo = angulo;
     }
-  delay(200); // escanea cada 200 milisegundos
+    
+    delay(200); // Escanea cada 200 milisegundos
   }
+  
+  Serial.println("Escaneo completado. Mejor dirección: " + String(mejorAngulo) + "° (" + String(mayorDistancia) + "mm)");
 }
 
-  void girarRobot(int angulo) {
-  int pasosGiro = 6.516*map(angulo, 0, 360, 0, 2048);
+void girarRobot(int angulo) {
+  if (angulo == 0) return; // No girar si el ángulo es 0
+  
+  int pasosGiro = 6.516 * map(angulo, 0, 360, 0, 2048);
 
-  Serial.println("Girara " + String(angulo) + "° Tomara " + String(pasosGiro) + " pasos");
+  Serial.println("Girará " + String(angulo) + "° Tomará " + String(pasosGiro) + " pasos");
 
   motor1.moveTo(motor1.currentPosition() - pasosGiro); // Izquierda atrás
   motor2.moveTo(motor2.currentPosition() + pasosGiro); // Derecha adelante
@@ -207,7 +223,7 @@ void escanearYBuscar() {
   while (motor1.distanceToGo() != 0 || motor2.distanceToGo() != 0) {
     motor1.run();
     motor2.run();
-    }
+  }
     
   // Actualizar ángulo del robot
   robotAngulo += angulo;
@@ -218,9 +234,13 @@ void escanearYBuscar() {
 }
 
 void avanzarRobot(int mm) {
-  if (mm <= 0) {return;}
-  int pasosAvance = 3.012*map(mm, 0, 360, 0, 2048);
-  Serial.println("Debe avanzar "+ String(mm)+"mm Tomara " + String(pasosAvance) + " pasos");
+  if (mm <= 0) {
+    Serial.println("No hay espacio seguro para avanzar");
+    return;
+  }
+  
+  int pasosAvance = 3.012 * map(mm, 0, 360, 0, 2048);
+  Serial.println("Debe avanzar " + String(mm) + "mm Tomará " + String(pasosAvance) + " pasos");
 
   motor1.moveTo(motor1.currentPosition() + pasosAvance);
   motor2.moveTo(motor2.currentPosition() + pasosAvance);
@@ -228,28 +248,26 @@ void avanzarRobot(int mm) {
   while (motor1.distanceToGo() != 0 && motor2.distanceToGo() != 0) {
     motor1.run();
     motor2.run();
-    }
+  }
     
   // Actualizar posición del robot
   float radianes = robotAngulo * 3.14159265 / 180.0;
   robotX += mm * cos(radianes);
   robotY += mm * sin(radianes);
   
-  Serial.println("Salio del loop de avnce ");
-  Serial.println("Posición robot: X=" + String(robotX) + " Y=" + String(robotY) + " Ángulo=" + String(robotAngulo));
+  Serial.println("Avance completado");
+  Serial.println("Posición robot: X=" + String(robotX) + " Y=" + String(robotY) + " Ángulo=" + String(robotAngulo) + "°");
 }
 
-
-void TestHwm(char *taskName){
+void TestHwm(char *taskName) {
   static int stack_hwm, stack_hwm_temp;
 
   stack_hwm_temp = uxTaskGetStackHighWaterMark(nullptr);
-  if(!stack_hwm || (stack_hwm_temp < stack_hwm)){
-    stack_hwm=stack_hwm_temp;
-    Serial.printf("%s has stack hwm %u\n",taskName,stack_hwm);
+  if (!stack_hwm || (stack_hwm_temp < stack_hwm)) {
+    stack_hwm = stack_hwm_temp;
+    Serial.printf("%s has stack hwm %u\n", taskName, stack_hwm);
   }
-} 
-
+}
 
 void TaskESCANEO(void *pvParameters) {
   escanearYBuscar();

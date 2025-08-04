@@ -93,7 +93,7 @@ void setup() {
 
   // Configurar servidor web
   server.on("/", handleRoot);
-  server.on("/check-updates", handleCheckUpdates);
+  server.on("/get-data",handleGetData);
   server.on("/wifi", handleWifi);
   server.begin();
   Serial.println("Servidor web iniciado");
@@ -158,7 +158,8 @@ void loop() {
   
   delay(3000); // Pausa entre escaneos (3 segundos)
   girarRobot(mejorAngulo);
-  avanzarRobot((mayorDistancia) - margenSeguridad);
+  int distancia_rec = mayorDistancia-margenSeguridad;
+  avanzarRobot(distancia_rec);
 }
 
 // ---------- FUNCIONES -------------

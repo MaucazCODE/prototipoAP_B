@@ -51,145 +51,259 @@ void escribirStringEnEEPROM(int direccion, String cadena) {
     EEPROM.commit();
 }
 
-// --- Endpoint para verificar nuevos puntos (AJAX) ---
-void handleCheckUpdates() {
-    server.send(200, "text/plain", String(numPuntos));
+// --- Endpoint para obtener datos actualizados (JSON) ---
+void handleGetData() {
+    String json = "{";
+    json += "\"numPuntos\":" + String(numPuntos) + ",";
+    json += "\"ultimoAngulo\":" + String(ultimoAngulo, 1) + ",";
+    json += "\"ultimaDistancia\":" + String(ultimaDistancia, 1) + ",";
+    json += "\"robotX\":" + String(robotX, 1) + ",";
+    json += "\"robotY\":" + String(robotY, 1) + ",";
+    json += "\"robotAngulo\":" + String(robotAngulo, 1) + ",";
+    
+    // Generar arrays de puntos en coordenadas del mundo real
+    json += "\"obstaculos\":[";
+    for (int i = 0; i < numPuntos; i++) {
+        // Calcular posición absoluta del obstáculo en coordenadas del mundo
+        float anguloAbsoluto = historialAngulos[i] + robotAngulo;
+        float anguloRad = anguloAbsoluto * 3.14159265 / 180.0;
+        float obstaculoX = robotX + historialDistancias[i] * cos(anguloRad);
+        float obstaculoY = robotY + historialDistancias[i] * sin(anguloRad);
+        
+        json += "{\"x\":" + String(obstaculoX, 1) + ",\"y\":" + String(obstaculoY, 1) + "}";
+        if (i < numPuntos - 1) json += ",";
+    }
+    json += "]}";
+    
+    server.send(200, "application/json", json);
 }
 
-// --- Página principal (Solo Radar) ---
+// --- Página principal (Mapa Cartesiano) ---
 void handleRoot() {
-    int radioMax = 2000; // mm
-    int canvasSize = 400; // px
-    int center = canvasSize / 2;
-    float escala = (float)center / radioMax;
-
-    // Generar coordenadas de TODOS los puntos acumulados
-    String puntosX = "[";
-    String puntosY = "[";
+    int canvasSize = 600; // Aumentamos el tamaño para mejor visualización
+    
+    // Calcular coordenadas iniciales para el mapa
+    String obstaculos = "[";
     for (int i = 0; i < numPuntos; i++) {
         float anguloAbsoluto = historialAngulos[i] + robotAngulo;
         float anguloRad = anguloAbsoluto * 3.14159265 / 180.0;
-        float puntoX = robotX + historialDistancias[i] * cos(anguloRad);
-        float puntoY = robotY + historialDistancias[i] * sin(anguloRad);
-        int x = center + int(puntoX * escala);
-        int y = center - int(puntoY * escala);
-        puntosX += String(x);
-        puntosY += String(y);
-        if (i < numPuntos - 1) {
-            puntosX += ",";
-            puntosY += ",";
-        }
+        float obstaculoX = robotX + historialDistancias[i] * cos(anguloRad);
+        float obstaculoY = robotY + historialDistancias[i] * sin(anguloRad);
+        
+        obstaculos += "{\"x\":" + String(obstaculoX, 1) + ",\"y\":" + String(obstaculoY, 1) + "}";
+        if (i < numPuntos - 1) obstaculos += ",";
     }
-    puntosX += "]";
-    puntosY += "]";
+    obstaculos += "]";
 
-    // HTML con actualización automática vía AJAX
+    // HTML con mapa cartesiano
     String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
-    html += "<title>Radar Robot ESP32</title>";
+    html += "<title>Mapa Robot ESP32</title>";
     html += "<style>";
-    html += "body { font-family: Arial; background: #181a1b; color: #eee; text-align: center; padding: 40px; margin: 0; }";
-    html += ".card { background: #222; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); display: inline-block; padding: 30px 50px; }";
-    html += "h1 { color: #3399ff; margin-bottom: 30px; }";
-    html += ".dato { font-size: 2em; margin: 20px 0; }";
-    html += ".info { font-size: 1.2em; margin: 15px 0; color: #aaa; }";
-    html += ".status { position: absolute; top: 10px; right: 10px; padding: 5px 10px; background: #333; border-radius: 5px; font-size: 0.9em; }";
-    html += ".online { background: #28a745; }";
-    html += ".scanning { background: #ffc107; color: #000; }";
+    html += "body { font-family: Arial; background: #0a0a0a; color: #eee; text-align: center; padding: 20px; margin: 0; }";
+    html += ".container { max-width: 1200px; margin: 0 auto; }";
+    html += ".header { background: #1a1a1a; border-radius: 10px; padding: 20px; margin-bottom: 20px; }";
+    html += "h1 { color: #00ff88; margin: 0 0 10px 0; font-size: 2.5em; }";
+    html += ".status { display: inline-block; padding: 8px 15px; border-radius: 20px; font-weight: bold; margin-left: 15px; }";
+    html += ".map-container { background: #1a1a1a; border-radius: 15px; padding: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }";
+    html += "#mapaCanvas { background: #000; border: 2px solid #00ff88; border-radius: 10px; }";
+    html += ".info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-top: 20px; }";
+    html += ".info-card { background: #2a2a2a; border-radius: 10px; padding: 15px; }";
+    html += ".info-title { color: #00ff88; font-weight: bold; margin-bottom: 10px; }";
+    html += ".info-value { font-size: 1.3em; color: #fff; }";
+    html += ".legend { display: flex; justify-content: center; gap: 30px; margin-top: 15px; flex-wrap: wrap; }";
+    html += ".legend-item { display: flex; align-items: center; gap: 8px; }";
+    html += ".legend-color { width: 15px; height: 15px; border-radius: 50%; border: 2px solid #fff; }";
     html += "</style></head><body>";
 
-    html += "<div class='status' id='status'>Conectado</div>";
-    html += "<div class='card'>";
-    html += "<h1> Mapa del Entorno</h1>";
-    html += "<canvas id='radarCanvas' width='" + String(canvasSize) + "' height='" + String(canvasSize) + "' style='background:#000; border-radius:50%; border: 2px solid #3399ff;'></canvas>";
-    html += "<div class='dato'>Obstáculos detectados: <span id='numPuntos'>" + String(numPuntos) + "</span></div>";
-    html += "<div class='info'>";
-    html += "<p> Último escaneo: <span id='ultimoAngulo'>" + String(ultimoAngulo, 1) + "</span>° - <span id='ultimaDistancia'>" + String(ultimaDistancia, 1) + "</span> mm</p>";
-    html += "<p> Posición: X=<span id='robotX'>" + String(robotX, 1) + "</span> Y=<span id='robotY'>" + String(robotY, 1) + "</span> Ángulo=<span id='robotAngulo'>" + String(robotAngulo, 1) + "</span>°</p>";
+    html += "<div class='container'>";
+    html += "<div class='header'>";
+    html += "<h1>Mapa del Entorno</h1>";
+    html += "<span class='status' id='status' style='background: #28a745;'> En línea</span>";
+    html += "</div>";
+
+    html += "<div class='map-container'>";
+    html += "<canvas id='mapaCanvas' width='" + String(canvasSize) + "' height='" + String(canvasSize) + "'></canvas>";
+    
+    html += "<div class='legend'>";
+    html += "<div class='legend-item'><div class='legend-color' style='background: #00ff00;'></div><span>Robot</span></div>";
+    html += "<div class='legend-item'><div class='legend-color' style='background: #ff0040;'></div><span>Obstáculos</span></div>";
+    html += "<div class='legend-item'><div class='legend-color' style='background: #0088ff;'></div><span>Trayectoria</span></div>";
+    html += "<div class='legend-item'><div class='legend-color' style='background: #ffaa00;'></div><span>Dirección</span></div>";
     html += "</div>";
     html += "</div>";
 
-    // JavaScript para actualización automática y dibujo del radar
+    html += "<div class='info-grid'>";
+    html += "<div class='info-card'>";
+    html += "<div class='info-title'>📡 Último Escaneo</div>";
+    html += "<div class='info-value'><span id='ultimoAngulo'>" + String(ultimoAngulo, 1) + "</span>° - <span id='ultimaDistancia'>" + String(ultimaDistancia, 1) + "</span> mm</div>";
+    html += "</div>";
+    html += "<div class='info-card'>";
+    html += "<div class='info-title'> Obstáculos Detectados</div>";
+    html += "<div class='info-value'><span id='numPuntos'>" + String(numPuntos) + "</span></div>";
+    html += "</div>";
+    html += "<div class='info-card'>";
+    html += "<div class='info-title'>Posición Robot</div>";
+    html += "<div class='info-value'>X: <span id='robotX'>" + String(robotX, 1) + "</span> mm</div>";
+    html += "<div class='info-value'>Y: <span id='robotY'>" + String(robotY, 1) + "</span> mm</div>";
+    html += "</div>";
+    html += "<div class='info-card'>";
+    html += "<div class='info-title'> Orientación</div>";
+    html += "<div class='info-value'><span id='robotAngulo'>" + String(robotAngulo, 1) + "</span>°</div>";
+    html += "</div>";
+    html += "</div>";
+    html += "</div>";
+
+    // JavaScript para mapa cartesiano en tiempo real
     html += "<script>";
-    html += "let ultimoNumPuntos = " + String(numPuntos) + ";";
-    html += "let canvas = document.getElementById('radarCanvas');";
+    html += "let canvas = document.getElementById('mapaCanvas');";
     html += "let ctx = canvas.getContext('2d');";
     html += "let canvasSize = " + String(canvasSize) + ";";
-    html += "let center = " + String(center) + ";";
-    
-    // Función para dibujar el radar
-    html += "function dibujarRadar(puntosX, puntosY) {";
-    html += "  ctx.clearRect(0, 0, canvasSize, canvasSize);";
-    // Círculos concéntricos
-    html += "  for(let r = 50; r < center; r += 50) {";
+    html += "let ultimoNumPuntos = " + String(numPuntos) + ";";
+    html += "let trayectoriaRobot = [{x: " + String(robotX) + ", y: " + String(robotY) + "}];";
+    html += "let escalaPixelPorMM = 0.15;"; // Escala: 0.15 pixels por mm
+    html += "let offsetX = 0, offsetY = 0;"; // Para centrar el mapa dinámicamente
+
+    // Función para convertir coordenadas del mundo a canvas
+    html += "function mundoACanvas(x, y) {";
+    html += "  return {";
+    html += "    x: (canvasSize / 2) + (x * escalaPixelPorMM) + offsetX,";
+    html += "    y: (canvasSize / 2) - (y * escalaPixelPorMM) + offsetY"; // Y invertida para que arriba sea positivo
+    html += "  };";
+    html += "}";
+
+    // Función para dibujar grilla
+    html += "function dibujarGrilla() {";
+    html += "  ctx.strokeStyle = '#333';";
+    html += "  ctx.lineWidth = 1;";
+    html += "  let gridSize = 500 * escalaPixelPorMM;"; // Líneas cada 500mm
+    html += "  for(let i = -canvasSize; i <= canvasSize * 2; i += gridSize) {";
     html += "    ctx.beginPath();";
-    html += "    ctx.arc(center, center, r, 0, 2 * Math.PI);";
-    html += "    ctx.strokeStyle = '#333';";
-    html += "    ctx.lineWidth = 1;";
+    html += "    ctx.moveTo(i + offsetX, 0);";
+    html += "    ctx.lineTo(i + offsetX, canvasSize);";
+    html += "    ctx.stroke();";
+    html += "    ctx.beginPath();";
+    html += "    ctx.moveTo(0, i + offsetY);";
+    html += "    ctx.lineTo(canvasSize, i + offsetY);";
     html += "    ctx.stroke();";
     html += "  }";
-    // Líneas radiales
-    html += "  for(let a = 0; a < 360; a += 45) {";
-    html += "    let rad = a * Math.PI / 180;";
-    html += "    let x = center + Math.cos(rad) * (center - 10);";
-    html += "    let y = center + Math.sin(rad) * (center - 10);";
-    html += "    ctx.beginPath();";
-    html += "    ctx.moveTo(center, center);";
-    html += "    ctx.lineTo(x, y);";
-    html += "    ctx.strokeStyle = '#333';";
-    html += "    ctx.lineWidth = 1;";
-    html += "    ctx.stroke();";
-    html += "  }";
-    // Borde exterior
-    html += "  ctx.beginPath();";
-    html += "  ctx.arc(center, center, center - 5, 0, 2 * Math.PI);";
-    html += "  ctx.strokeStyle = '#3399ff';";
+    // Ejes principales
+    html += "  ctx.strokeStyle = '#555';";
     html += "  ctx.lineWidth = 2;";
-    html += "  ctx.stroke();";
-    // Robot (centro)
     html += "  ctx.beginPath();";
-    html += "  ctx.arc(center, center, 6, 0, 2 * Math.PI);";
+    html += "  ctx.moveTo(canvasSize/2 + offsetX, 0);";
+    html += "  ctx.lineTo(canvasSize/2 + offsetX, canvasSize);";
+    html += "  ctx.stroke();";
+    html += "  ctx.beginPath();";
+    html += "  ctx.moveTo(0, canvasSize/2 + offsetY);";
+    html += "  ctx.lineTo(canvasSize, canvasSize/2 + offsetY);";
+    html += "  ctx.stroke();";
+    html += "}";
+
+    // Función para dibujar el mapa completo
+    html += "function dibujarMapa(robotX, robotY, robotAngulo, obstaculos) {";
+    html += "  ctx.clearRect(0, 0, canvasSize, canvasSize);";
+    html += "  ";
+    html += "  dibujarGrilla();";
+    html += "  ";
+    html += "  let posRobot = mundoACanvas(robotX, robotY);";
+    html += "  ";
+    // Dibujar trayectoria del robot
+    html += "  if(trayectoriaRobot.length > 1) {";
+    html += "    ctx.strokeStyle = '#0088ff';";
+    html += "    ctx.lineWidth = 3;";
+    html += "    ctx.beginPath();";
+    html += "    let primerPunto = mundoACanvas(trayectoriaRobot[0].x, trayectoriaRobot[0].y);";
+    html += "    ctx.moveTo(primerPunto.x, primerPunto.y);";
+    html += "    for(let i = 1; i < trayectoriaRobot.length; i++) {";
+    html += "      let punto = mundoACanvas(trayectoriaRobot[i].x, trayectoriaRobot[i].y);";
+    html += "      ctx.lineTo(punto.x, punto.y);";
+    html += "    }";
+    html += "    ctx.stroke();";
+    html += "  }";
+    html += "  ";
+    // Dibujar obstáculos
+    html += "  obstaculos.forEach(obstaculo => {";
+    html += "    let pos = mundoACanvas(obstaculo.x, obstaculo.y);";
+    html += "    ctx.beginPath();";
+    html += "    ctx.arc(pos.x, pos.y, 4, 0, 2 * Math.PI);";
+    html += "    ctx.fillStyle = '#ff0040';";
+    html += "    ctx.fill();";
+    html += "    ctx.strokeStyle = '#ff4070';";
+    html += "    ctx.lineWidth = 2;";
+    html += "    ctx.stroke();";
+    html += "  });";
+    html += "  ";
+    // Dibujar robot con orientación
+    html += "  ctx.beginPath();";
+    html += "  ctx.arc(posRobot.x, posRobot.y, 8, 0, 2 * Math.PI);";
     html += "  ctx.fillStyle = '#00ff00';";
     html += "  ctx.fill();";
     html += "  ctx.strokeStyle = '#00cc00';";
-    html += "  ctx.lineWidth = 2;";
+    html += "  ctx.lineWidth = 3;";
     html += "  ctx.stroke();";
-    // Puntos detectados
-    html += "  for(let i = 0; i < puntosX.length; i++) {";
-    html += "    ctx.beginPath();";
-    html += "    ctx.arc(puntosX[i], puntosY[i], 3, 0, 2 * Math.PI);";
-    html += "    ctx.fillStyle = '#ff0000';";
-    html += "    ctx.fill();";
-    html += "    ctx.strokeStyle = '#cc0000';";
-    html += "    ctx.lineWidth = 1;";
-    html += "    ctx.stroke();";
-    html += "  }";
+    html += "  ";
+    // Flecha de dirección del robot
+    html += "  let anguloRad = robotAngulo * Math.PI / 180;";
+    html += "  let flechaX = posRobot.x + Math.cos(anguloRad) * 20;";
+    html += "  let flechaY = posRobot.y - Math.sin(anguloRad) * 20;";
+    html += "  ctx.beginPath();";
+    html += "  ctx.moveTo(posRobot.x, posRobot.y);";
+    html += "  ctx.lineTo(flechaX, flechaY);";
+    html += "  ctx.strokeStyle = '#ffaa00';";
+    html += "  ctx.lineWidth = 4;";
+    html += "  ctx.stroke();";
+    html += "  ";
+    // Punta de flecha
+    html += "  let punta1X = flechaX - Math.cos(anguloRad - 0.5) * 8;";
+    html += "  let punta1Y = flechaY + Math.sin(anguloRad - 0.5) * 8;";
+    html += "  let punta2X = flechaX - Math.cos(anguloRad + 0.5) * 8;";
+    html += "  let punta2Y = flechaY + Math.sin(anguloRad + 0.5) * 8;";
+    html += "  ctx.beginPath();";
+    html += "  ctx.moveTo(flechaX, flechaY);";
+    html += "  ctx.lineTo(punta1X, punta1Y);";
+    html += "  ctx.moveTo(flechaX, flechaY);";
+    html += "  ctx.lineTo(punta2X, punta2Y);";
+    html += "  ctx.stroke();";
     html += "}";
 
-    // Función para actualizar datos
+    // Función para actualizar todos los datos sin recargar
     html += "function actualizarDatos() {";
-    html += "  fetch('/check-updates')";
-    html += "    .then(response => response.text())";
-    html += "    .then(numPuntos => {";
-    html += "      if(parseInt(numPuntos) !== ultimoNumPuntos) {";
-    html += "        document.getElementById('status').className = 'status scanning';";
-    html += "        document.getElementById('status').textContent = 'Actualizando...';";
-    html += "        setTimeout(() => location.reload(), 500);";
-    html += "      } else {";
-    html += "        document.getElementById('status').className = 'status online';";
-    html += "        document.getElementById('status').textContent = 'En línea';";
+    html += "  fetch('/get-data')";
+    html += "    .then(response => response.json())";
+    html += "    .then(data => {";
+    html += "      document.getElementById('numPuntos').textContent = data.numPuntos;";
+    html += "      document.getElementById('ultimoAngulo').textContent = data.ultimoAngulo;";
+    html += "      document.getElementById('ultimaDistancia').textContent = data.ultimaDistancia;";
+    html += "      document.getElementById('robotX').textContent = data.robotX;";
+    html += "      document.getElementById('robotY').textContent = data.robotY;";
+    html += "      document.getElementById('robotAngulo').textContent = data.robotAngulo;";
+    html += "      ";
+    // Actualizar trayectoria si el robot se movió
+    html += "      let ultimaPosicion = trayectoriaRobot[trayectoriaRobot.length - 1];";
+    html += "      if(Math.abs(ultimaPosicion.x - data.robotX) > 10 || Math.abs(ultimaPosicion.y - data.robotY) > 10) {";
+    html += "        trayectoriaRobot.push({x: data.robotX, y: data.robotY});";
+    html += "        if(trayectoriaRobot.length > 50) trayectoriaRobot.shift();"; // Limitar trayectoria
+    html += "      }";
+    html += "      ";
+    html += "      dibujarMapa(data.robotX, data.robotY, data.robotAngulo, data.obstaculos);";
+    html += "      document.getElementById('status').innerHTML = '🟢 En línea';";
+    html += "      if(data.numPuntos !== ultimoNumPuntos) {";
+    html += "        ultimoNumPuntos = data.numPuntos;";
+    html += "        console.log('Nuevos obstáculos detectados: ' + data.numPuntos);";
     html += "      }";
     html += "    })";
-    html += "    .catch(() => {";
-    html += "      document.getElementById('status').className = 'status';";
-    html += "      document.getElementById('status').textContent = 'Desconectado';";
+    html += "    .catch(error => {";
+    html += "      document.getElementById('status').innerHTML = '🔴 Desconectado';";
+    html += "      document.getElementById('status').style.background = '#dc3545';";
+    html += "      console.error('Error:', error);";
     html += "    });";
     html += "}";
 
-    // Dibujar radar inicial
-    html += "dibujarRadar(" + puntosX + ", " + puntosY + ");";
+    // Dibujar mapa inicial
+    html += "dibujarMapa(" + String(robotX) + ", " + String(robotY) + ", " + String(robotAngulo) + ", " + obstaculos + ");";
     
-    // Verificar actualizaciones cada 2 segundos
-    html += "setInterval(actualizarDatos, 2000);";
+    // Actualizar cada 1.5 segundos
+    html += "setInterval(actualizarDatos, 1500);";
     html += "</script>";
 
     html += "</body></html>";
@@ -227,7 +341,7 @@ void iniciarAP(const char* apSsid, const char* apPassword) {
     WiFi.mode(WIFI_AP);
     WiFi.softAP(apSsid, apPassword);
     server.on("/", handleRoot);
-    server.on("/check-updates", handleCheckUpdates);
+    server.on("/get-data", handleGetData);
     server.on("/wifi", HTTP_POST, handleWifi);
     server.begin();
     Serial.println("Servidor web iniciado en modo AP.");
@@ -241,7 +355,7 @@ void iniciarConexionWiFi(const char* apSsid, const char* apPassword) {
         Serial.print("IP: ");
         Serial.println(WiFi.localIP());
         server.on("/", handleRoot);
-        server.on("/check-updates", handleCheckUpdates);
+        server.on("/get-data", handleGetData);
         server.on("/wifi", HTTP_POST, handleWifi);
         server.begin();
     } else {

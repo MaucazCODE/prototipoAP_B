@@ -31,6 +31,10 @@ int historialAngulos[MAX_PUNTOS];
 int historialDistancias[MAX_PUNTOS];
 int numPuntos = 0;
 
+// NUEVOS ARRAYS: Coordenadas absolutas de obstáculos
+float obstaculosX[MAX_PUNTOS];
+float obstaculosY[MAX_PUNTOS];
+
 // CPUs a utilizar
 #define PRO_CPU 0
 #define APP_CPU 1
@@ -185,8 +189,16 @@ void escanearYBuscar() {
       if (numPuntos < MAX_PUNTOS) {
         historialAngulos[numPuntos] = angulo;
         historialDistancias[numPuntos] = dist;
+        
+        // CALCULAR Y GUARDAR COORDENADAS ABSOLUTAS AQUÍ
+        float anguloAbsoluto = angulo + robotAngulo;
+        float anguloRad = anguloAbsoluto * 3.14159265 / 180.0;
+        obstaculosX[numPuntos] = robotX + dist * cos(anguloRad);
+        obstaculosY[numPuntos] = robotY + dist * sin(anguloRad);
+        
         numPuntos++;
         Serial.println("Punto agregado #" + String(numPuntos) + " - Ángulo: " + String(angulo) + "° Distancia: " + String(dist) + "mm");
+        Serial.println("Coordenadas absolutas: X=" + String(obstaculosX[numPuntos-1], 1) + " Y=" + String(obstaculosY[numPuntos-1], 1));
       } else {
         Serial.println("Límite de puntos alcanzado (" + String(MAX_PUNTOS) + ")");
       }

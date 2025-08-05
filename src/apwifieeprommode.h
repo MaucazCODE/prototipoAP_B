@@ -14,6 +14,9 @@
 #include <Wire.h>
 #include "WiFi.h"
 
+// Definir puntos - AUMENTADO para más capacidad
+#define MAX_PUNTOS 500
+
 // Variables externas
 extern int numPuntos;
 extern int historialAngulos[];
@@ -23,6 +26,10 @@ extern float ultimaDistancia;
 extern float robotX;
 extern float robotY;
 extern float robotAngulo;
+
+// NUEVAS VARIABLES: Coordenadas absolutas de obstáculos
+extern float obstaculosX[MAX_PUNTOS];
+extern float obstaculosY[MAX_PUNTOS];
 
 extern WebServer server;
 
@@ -61,16 +68,10 @@ void handleGetData() {
     json += "\"robotY\":" + String(robotY, 1) + ",";
     json += "\"robotAngulo\":" + String(robotAngulo, 1) + ",";
     
-    // Generar arrays de puntos en coordenadas del mundo real
+    // Usar las coordenadas absolutas ya calculadas
     json += "\"obstaculos\":[";
     for (int i = 0; i < numPuntos; i++) {
-        // Calcular posición absoluta del obstáculo en coordenadas del mundo
-        float anguloAbsoluto = historialAngulos[i] + robotAngulo;
-        float anguloRad = anguloAbsoluto * 3.14159265 / 180.0;
-        float obstaculoX = robotX + historialDistancias[i] * cos(anguloRad);
-        float obstaculoY = robotY + historialDistancias[i] * sin(anguloRad);
-        
-        json += "{\"x\":" + String(obstaculoX, 1) + ",\"y\":" + String(obstaculoY, 1) + "}";
+        json += "{\"x\":" + String(obstaculosX[i], 1) + ",\"y\":" + String(obstaculosY[i], 1) + "}";
         if (i < numPuntos - 1) json += ",";
     }
     json += "]}";
@@ -82,15 +83,10 @@ void handleGetData() {
 void handleRoot() {
     int canvasSize = 600; // Aumentamos el tamaño para mejor visualización
     
-    // Calcular coordenadas iniciales para el mapa
+    // Calcular coordenadas iniciales para el mapa usando coordenadas absolutas
     String obstaculos = "[";
     for (int i = 0; i < numPuntos; i++) {
-        float anguloAbsoluto = historialAngulos[i] + robotAngulo;
-        float anguloRad = anguloAbsoluto * 3.14159265 / 180.0;
-        float obstaculoX = robotX + historialDistancias[i] * cos(anguloRad);
-        float obstaculoY = robotY + historialDistancias[i] * sin(anguloRad);
-        
-        obstaculos += "{\"x\":" + String(obstaculoX, 1) + ",\"y\":" + String(obstaculoY, 1) + "}";
+        obstaculos += "{\"x\":" + String(obstaculosX[i], 1) + ",\"y\":" + String(obstaculosY[i], 1) + "}";
         if (i < numPuntos - 1) obstaculos += ",";
     }
     obstaculos += "]";
@@ -134,7 +130,7 @@ void handleRoot() {
 
     html += "<div class='info-grid'>";
     html += "<div class='info-card'>";
-    html += "<div class='info-title'>📡 Último Escaneo</div>";
+    html += "<div class='info-title'> Último Escaneo</div>";
     html += "<div class='info-value'><span id='ultimoAngulo'>" + String(ultimoAngulo, 1) + "</span>° - <span id='ultimaDistancia'>" + String(ultimaDistancia, 1) + "</span> mm</div>";
     html += "</div>";
     html += "<div class='info-card'>";
@@ -286,14 +282,14 @@ void handleRoot() {
     html += "      }";
     html += "      ";
     html += "      dibujarMapa(data.robotX, data.robotY, data.robotAngulo, data.obstaculos);";
-    html += "      document.getElementById('status').innerHTML = '🟢 En línea';";
+    html += "      document.getElementById('status').innerHTML = ' En línea';";
     html += "      if(data.numPuntos !== ultimoNumPuntos) {";
     html += "        ultimoNumPuntos = data.numPuntos;";
     html += "        console.log('Nuevos obstáculos detectados: ' + data.numPuntos);";
     html += "      }";
     html += "    })";
     html += "    .catch(error => {";
-    html += "      document.getElementById('status').innerHTML = '🔴 Desconectado';";
+    html += "      document.getElementById('status').innerHTML = 'Desconectado';";
     html += "      document.getElementById('status').style.background = '#dc3545';";
     html += "      console.error('Error:', error);";
     html += "    });";
